@@ -14,172 +14,199 @@
 \begin{document}
 \maketitle
 
-At the first phase of the project, we have investigated the objects in
-our abstract domain for characterizing strictness of a subset of GHC
-Core.
+We aim to extend QuickCheck with the ability to probabilistically
+verify the laziness/strictness behavior of Haskell functions. That is,
+we will allow users to write a specification of the strictness
+behavior of a particular function, and by fuzzing inputs to the
+function, determine if the function is \emph{exactly} as strict as the
+user has specified.
 
-In particular, we have restricted our scope to functions that take a
-single argument, and produces a single argument. However, we place no
-constraint on the types of the input and output. They can be terms of
-arbitrary user-defined algebraic data types as input.
+Before describing in detail how our proposed tool will work, we give
+several definitions regarding laziness in Haskell:
 
-An example of such a function is \verb|half|, which divides a natural
-number by $2$.
+A lazy function takes an \emph{input} to an \emph{output}. For now, we
+consider only inputs and outputs restricted to single algebraic
+datatypes which do not contain functions (that is, all functions we
+can speak about are unary first-order functions). We plan to extend
+this to multi-argument and higher-order functions in later stages of
+this project.
 
-\begin{minted}{haskell}
--- |The data type of natural numbers
-data Nat = Z     -- ^ Zero
-         | S Nat -- ^ Successor of a natural number
+When a lazy function is applied to an input, it is done so in a
+\emph{context} which makes use of some part of its output---that is,
+the context may not use the entire output data structure to continue
+its own computation. We call the portion of the input which is used by
+the context the \emph{demand} on the output. The semantics of lazy
+evaluation dictate that any portion of the input which is not required
+to compute the demanded portion of the output are not evaluated in the
+first place---that is, evaluation only occurs as much as is necessary
+to satisfy the demand of the calling context.
 
-half :: Nat -> Nat
-half n =
-  case! n of
-    Z    -> Z
-    S n' -> case! n' of
-              Z     -> Z
-              S n'' -> S (half n'')
-\end{minted}
+For example, let us consider a function `f :: Int -> Int -> Int` where
+`f x n = fst (x, fib n)`. Although computing the second component of
+the pair in `f 1 100000000` would be very expensive, this computation
+never occurs because the demand placed upon the pair (extracting the
+first component) only requires the first component to be evaluated. We
+say that `f` is \emph{strict} in its first parameter (`x`) and
+\emph{lazy} in its second parameter (`n`).
 
-The \verb|half| function pattern matches on the input number, and
-returns $0$ if the input is either $0$ or $1$, and if the input is $2$
-successor constructors applied to some other natural number, then it
-recursively invokes itself on that natural number, and finally applies
-a constructor to the result of the recursive computation. We will use
-\verb|half| as the running example in the following discussion.
+We can capture this notion formally as a function from a given demand
+of the output to a demand of the input. We call this a \emph{demand
+  specification}. Here, we can concretely represent a demand as a
+\emph{subshape} of the input/output---that is, a data structure
+corresponding to one of these data types, but which can be truncated
+at any arbitrary position in the structure of the data type. We call
+this derived data type the \emph{demand type} corresponding to a data
+type.
 
-Our first observation is that we can use a graph to represent the
-structure of an algebraic data type, with the internal nodes
-correspond to choices of constructors and projection of arguments
-applied to constructors. Concretely, the \verb|Nat| type is
-represented by this graph:
+For example, the corresponding demand type for the type `(Int, Int)` would be:
 
-\begin{figure}[H]
-  \centering
-\begin{tikzpicture}[->,>=stealth',shorten >=1pt,auto,node distance=3.5cm,
-        scale = 1,transform shape]
+`Demand (Demand Int, Demand Int)`
 
-  \node[state] (top)                        {+};
-  \node[state] (left)  [below left of=top]  {x};
-  \node[state] (right) [below right of=top] {x};
+where
 
-  \path (top)   edge              node {$Z$} (left)
-        (top)   edge              node {$S$} (right)
-        (right) edge [bend left]  node {$\mu$} (top);
+```
+data Demand a = ~   -- ^ Not demanding
+              | ! a -- ^ Demanding the constructor at this level
+              | *   -- ^ Demanding a primitive or nullary constructor
+```
 
-\end{tikzpicture}
-\end{figure}
+All the values of these types are: `~`, `(~, ~)`, `! (*, ~)`, `! (~,
+*)`, and `! (*, *)`. These represent all of the possible demands which
+a context could place on the type `(Int, Int)`.
 
-The \verb|+| node represents the choice between constructor \verb|Z|
-and constructor \verb|S| in a natural number, where the $\mu$ edge
-represents the recursive structure of \verb|Nat| --- the field of the
-successor constructor is also a natural number.
+Suppose we have a function `g :: (Int, Int) -> Int`. The corresponding
+demand specification for `g` would be a function `gSpec :: Demand Int
+-> Demand (Demand Int, Demand Int)`.
 
-Having the type of \verb|Nat| represented as a graph is a first step
-towards exploring representations of strictness in this format. We
-also need a control flow graph of the function under the analysis. In
-this case, the half function can be represented by the following CFG:
+Concretely, consider the function `fst` (for integers):
 
-\begin{figure}[H]
-  \centering
-\begin{tikzpicture}[->,>=stealth',shorten >=1pt,auto,node distance=3.5cm,
-        scale = 1,transform shape]
+`fst :: (Int, Int) -> Int`
+`fst (a, b) = a`
 
-  \node[state] (n)  {\verb|n|};
-  \node[state] (z0) [below left of=n] {\verb|Z|};
-  \node[state] (s0) [below right of=n] {\verb|n'|};
-  \node[state] (z1) [below left of=s0] {\verb|Z|};
-  \node[state] (s1) [below right of=s0] {\verb|n''|};
+An accurate demand specification for `fst` is:
 
-  \path (n) edge               node {$$} (z0)
-        (n) edge               node {$$} (s0)
-        (s0) edge              node {$$} (z1)
-        (s0) edge              node {$$} (s1)
-        (s1) edge [bend right] node {$$} (n);
-\end{tikzpicture}
-\end{figure}
+`fstSpec :: Demand Int -> Demand (Demand Int, Demand Int)`
+`fstSpec ~ = ~`
+`fstSpec * = ! (*, ~)`
 
-The CFG can be interpreted as the following: the function \verb|half|
-branches on the variable $n$, and returns if $n$ is \verb|Z|, or it
-branches on the predecessor $n'$ of $n$, and terminates if $n'$ is
-\verb|Z|, otherwise it recurses on the predecessor $n''$ of $n'$.
+This states that if we demand nothing from the result of `fst`, we do
+not need to evaluate its argument at all. (This is true for
+\emph{every} function in a lazy language!) However, if we demand the
+resultant integer from `fst`, we must evaluate the first integer in
+the input pair, but we do not need to evaluate the second element of
+the pair.
 
-Now, we can connect the nodes on the type \verb|Nat| and the nodes on
-the CFG of \verb|half| to approximate the strictness behavior.
+For functions like `fst`, the demand on input is a \emph{static
+  demand}: that is, for each demand on the output, any input to the
+function will be evaluated to the same degree.
 
-\begin{figure}[H]
-  \centering
-  \includegraphics[width=0.7\textwidth]{half}
-  \caption{Strictness graph of \texttt{half}}
-\end{figure}
-
-Here, the graph on the righthand side propagates demand of the output
-through the control flow graph, back to the input on the lefthand
-side. The way to read this graph is
-
-\begin{enumerate}
-  \item \verb|half| produces nothing at nodes $n$ and $n'$. Hence,
-    they're connected to the top node on the RHS, which has not
-    produced any constructors yet.
-
-  \item \verb|half| produces a \verb|Z| constructor when $n$ turns out
-    to be zero. Hence, it is connected to the \verb|x| node following
-    the \verb|Z| branch on the RHS.
-
-  \item \verb|half| also produces \verb|Z| when $n'$ turns out to be
-    zero. Hence the connection between the lower \verb|Z| node and the
-    left \verb|x| node following the \verb|Z| branch on the RHS.
-
-  \item \verb|half| produces a \verb|S| constructor when $n'$ turns
-    out to be the successor of some number $n''$. Hence, there is a
-    connection between $n''$ and the \verb|x| node following the
-    \verb|S| branch.
-
-  \item We also connect all the pattern matching points to where the
-    sums occur on the LHS. Since we pattern match on $n$, which
-    corresponds to the top level \verb|+| node on the LHS, there is an
-    edge between them. Similarly, there is an edge between \verb|x|
-    following the \verb|S| branch to the node $n'$. Note that the same
-    \verb|x| is also connected to $n''$, here is where we lose some
-    precision on exactly where $n''$ occurs in the structure of the
-    input. However, the precision can be improved by unrolling the
-    LHS's recursion a few times.
-\end{enumerate}
-
-The graph of \verb|half| captures a sound approximation of the
-function's strictness behavior. We conjecture that there is in fact a
-class of functions whose strictness behavior can be soundly
-approximated like this.
-
-Also, conceptually, the graph above describes a Finite State
-Transducer, which is a variant of Non-deterministic Finite State
-Automata that has an input tape and an output tape, and the transition
-graph has the same restrictions as an NFA. In this case, the input
-tape holds the constructors that one demands of the output, and the
-output tape outputs the constructors one \textit{may} have forced on
-the input. This seems to suggest some form of regularness of the
-functions that can be characterized by such graphs.
-
-One example that cannot be represented by graphs like this is a
-degenerate \verb|swap| function that infinitely changes the position
-of its two arguments.
+This is not true in general, and not merely in pathological
+examples. Many (perhaps most!) useful functions have dynamic demand
+behavior---that is, their demand specification depends on the values
+of the input. We say that such functions have \emph{dependent demand}:
+that is, the demand specification of these functions must consider the
+input values of the function as well.
 
 \begin{minted}{haskell}
-badSwap :: (a, a) -> a
-badSwap p =
-  case! p of
-    (x, y) -> let p' = (y, x) in
-              badSwap p'
+take :: (Int, [Int]) -> [Int]
+take (n, xs) =
+  case (n, xs) of
+    (0, _)     -> []
+    (n',x:xs') -> x:(take ((n'-1), xs'))
+    (n', [])   -> []
 \end{minted}
 
-The graph is not capable of capturing the change of position of the
-first and second elements in the tuple in a sound way, and we're
-currently considering solutions to this problem. One could potentially
-unroll the recursion in \verb|badSwap| until the order of arguments is
-restored, but such methods can quickly break down in situations where
-the number of unrolling required is not known statically. Another
-solution is to develop a method of distinguishing such ``misbehaving''
-functions from the functions whose strictness behavior can be captured
-by a graph, and our analysis will simply refuse to give a graph for
-these functions.
+Just given some demand on the output list, we can't guess the demand
+on the second element of the input pair, although we do know that the
+first element of the pair will always be evaluated.
+
+Suppose we have demand the first 2 elements of some result of take,
+there is no one input demand that corresponds to this output
+demand. However, if we know what the first argument to `take` is, we
+can determine the degree to which the input list must be
+evaluated. Note that the demand on the output still is another factor
+in determining the demand on the input, since if we demand nothing on
+the output, then nothing on the input will be demanded.
+
+The demand specification of `take` could be
+
+```
+takeSpec :: (Int, [Int]) -> Demand [Demand Int] -> Demand (Demand Int, Demand [Demand Int])
+takeSpec _       ~    =  ~
+takeSpec (0, _)  ![]  =  !(*, ~)
+takeSpec (n, xs) !ds  =
+  case (ds, xs) of
+    ([],     _)    -> !(*, ![])
+    (d:ds', x:xs') ->
+      let !(_, !ds'') = takeSpec (n-1, xs') !ds' in
+      !(*, !(d:ds''))
+```
+
+Determining statically whether a function meets its demand spec is
+undecidable due to the Halting Problem. So, instead of statically
+approximating these behavior, we choose to apply runtime
+instrumentation with randomized testing, this gives a high level of
+confidence.
+
+We choose to implement this as an extension to QuickCheck
+(CITATION). We will use generic programming to derive the demand types
+of functions under consideration. We will use existing QuickCheck
+generator infrastructure to fuzz inputs to the function, and demands
+on the output of the function. Because only certain shapes of demand
+are realizable on a given output, we specialize the demand generators
+to produce only sensible demands on each invocation of the
+function. We then run the function on the random input to obtain
+un-evaluated output, and place a random demand on this output while
+instrumenting the function to determine the resultant demand on the
+input. We can then use the demand specification to check whether the
+demand specification exactly matches what the actual demand behavior
+of the function was in this trial.
+
+Because we integrate with the existing functionality of QuickCheck, we
+can employ its \emph{shrinking} abilities to produce minimal
+counterexamples of input/demand pairs which fail to satisfy a given
+demand specification, if this specification is faulty.
+
+Note that there are two ways in which a specification may be faulty:
+it may fail to produce an input demand which exactly matches the real
+observed input demand, or it may fail to cover all possible realizable
+combinations of input and demand.
+
+To avoid unnecessary metaprogramming, we choose not to calculate an
+instrumented version of the function under consideration. We do not
+need to resort to such strategies because we can instead instrument
+the input data structure to report to us how it is evaluated by the
+function. As such, we may treat our functions as a black box.
+
+In order to instrument a lazy data structure, we must use so-called
+``unsafe'' features of Haskell---in particular, the function
+`unsafePerformIO` which allows us to attach a callback to a particular
+lazy value so that the callback is run when that value is
+evaluated. We may traverse the generated input data structure to add
+such a callback to every node in that structure. By tracking which of
+these callbacks are invoked when we demand a particular part of the
+output of some function applied to the instrumented structure, we
+produce an exact representation of the input demand of this function
+given a particular output demand and input value.
+
+Once we have obtained a pair of generated output demand and observed
+input demand, it's trivial to run the demand specification on the
+output demand and check whether it exactly matches the observed
+demand. If it does not, we may repeat this process by shrinking inputs
+to the function to compute a minimal example exhibiting the detected
+violation of the demand specification.
+
+We need not only to consider how to \emph{check} such specifications,
+but also how to specify them in the first place! To that end, we will
+use Haskell's generic programming features to provide a syntax for
+users to succinctly write these demand specifications without worrying
+about the details of our implementation. Ideally, this syntax would
+look very similar to the syntax we use above, but we may need to make
+some concessions due to the limitations of the implementation strategy
+we choose for this interface.
+
+Moving forward, we want to allow users to check demand specifications
+of multi-argument functions, higher-order functions, and functions on
+data structures which themselves contain functions.
 
 \end{document}
