@@ -41,13 +41,13 @@ to compute the demanded portion of the output are not evaluated in the
 first place---that is, evaluation only occurs as much as is necessary
 to satisfy the demand of the calling context.
 
-For example, let us consider a function `f :: Int -> Int -> Int` where
-`f x n = fst (x, fib n)`. Although computing the second component of
-the pair in `f 1 100000000` would be very expensive, this computation
+For example, let us consider a function \verb|f :: Int -> Int -> Int| where
+\verb|f x n = fst (x, fib n)|. Although computing the second component of
+the pair in \verb|f 1 100000000| would be very expensive, this computation
 never occurs because the demand placed upon the pair (extracting the
 first component) only requires the first component to be evaluated. We
-say that `f` is \emph{strict} in its first parameter (`x`) and
-\emph{lazy} in its second parameter (`n`).
+say that \verb|f| is \emph{strict} in its first parameter (\verb|x|) and
+\emph{lazy} in its second parameter (\verb|n|).
 
 We can capture this notion formally as a function from a given demand
 of the output to a demand of the input. We call this a \emph{demand
@@ -58,45 +58,50 @@ at any arbitrary position in the structure of the data type. We call
 this derived data type the \emph{demand type} corresponding to a data
 type.
 
-For example, the corresponding demand type for the type `(Int, Int)` would be:
+For example, the corresponding demand type for the type \verb|(Int, Int)| would be:
 
-`Demand (Demand Int, Demand Int)`
+\verb|Demand (Demand Int, Demand Int)|
 
 where
 
-```
+\begin{minted}{haskell}
 data Demand a = ~   -- ^ Not demanding
               | ! a -- ^ Demanding the constructor at this level
               | *   -- ^ Demanding a primitive or nullary constructor
-```
+\end{minted}
 
-All the values of these types are: `~`, `(~, ~)`, `! (*, ~)`, `! (~,
-*)`, and `! (*, *)`. These represent all of the possible demands which
-a context could place on the type `(Int, Int)`.
+All the values of these types are:
+\verb|~, (~, ~), ! (*, ~), ! (~, *)|, and \verb|! (*, *)|. These
+represent all of the possible demands which a context could place on
+the type \verb|(Int, Int)|.
 
-Suppose we have a function `g :: (Int, Int) -> Int`. The corresponding
-demand specification for `g` would be a function `gSpec :: Demand Int
--> Demand (Demand Int, Demand Int)`.
+Suppose we have a function \verb|g :: (Int, Int) -> Int|. The corresponding
+demand specification for g would be a function
+\verb|gSpec :: Demand Int -> Demand (Demand Int, Demand Int)|.
 
-Concretely, consider the function `fst` (for integers):
+Concretely, consider the function \verb|fst| (for integers):
 
-`fst :: (Int, Int) -> Int`
-`fst (a, b) = a`
+\begin{minted}{haskell}
+fst :: (Int, Int) -> Int
+fst (a, b) = a
+\end{minted}
 
-An accurate demand specification for `fst` is:
+An accurate demand specification for \verb|fst| is:
 
-`fstSpec :: Demand Int -> Demand (Demand Int, Demand Int)`
-`fstSpec ~ = ~`
-`fstSpec * = ! (*, ~)`
+\begin{minted}{haskell}
+fstSpec :: Demand Int -> Demand (Demand Int, Demand Int)
+fstSpec ~ = ~
+fstSpec * = ! (*, ~)
+\end{minted}
 
-This states that if we demand nothing from the result of `fst`, we do
+This states that if we demand nothing from the result of \verb|fst|, we do
 not need to evaluate its argument at all. (This is true for
 \emph{every} function in a lazy language!) However, if we demand the
-resultant integer from `fst`, we must evaluate the first integer in
+resultant integer from \verb|fst|, we must evaluate the first integer in
 the input pair, but we do not need to evaluate the second element of
 the pair.
 
-For functions like `fst`, the demand on input is a \emph{static
+For functions like \verb|fst|, the demand on input is a \emph{static
   demand}: that is, for each demand on the output, any input to the
 function will be evaluated to the same degree.
 
@@ -122,15 +127,15 @@ first element of the pair will always be evaluated.
 
 Suppose we have demand the first 2 elements of some result of take,
 there is no one input demand that corresponds to this output
-demand. However, if we know what the first argument to `take` is, we
+demand. However, if we know what the first argument to \verb|take| is, we
 can determine the degree to which the input list must be
 evaluated. Note that the demand on the output still is another factor
 in determining the demand on the input, since if we demand nothing on
 the output, then nothing on the input will be demanded.
 
-The demand specification of `take` could be
+The demand specification of \verb|take| could be
 
-```
+\begin{minted}{haskell}
 takeSpec :: (Int, [Int]) -> Demand [Demand Int] -> Demand (Demand Int, Demand [Demand Int])
 takeSpec _       ~    =  ~
 takeSpec (0, _)  ![]  =  !(*, ~)
@@ -140,7 +145,7 @@ takeSpec (n, xs) !ds  =
     (d:ds', x:xs') ->
       let !(_, !ds'') = takeSpec (n-1, xs') !ds' in
       !(*, !(d:ds''))
-```
+\end{minted}
 
 Determining statically whether a function meets its demand spec is
 undecidable due to the Halting Problem. So, instead of statically
@@ -180,7 +185,7 @@ function. As such, we may treat our functions as a black box.
 
 In order to instrument a lazy data structure, we must use so-called
 ``unsafe'' features of Haskell---in particular, the function
-`unsafePerformIO` which allows us to attach a callback to a particular
+\verb|unsafePerformIO| which allows us to attach a callback to a particular
 lazy value so that the callback is run when that value is
 evaluated. We may traverse the generated input data structure to add
 such a callback to every node in that structure. By tracking which of
