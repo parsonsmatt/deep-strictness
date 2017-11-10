@@ -1,0 +1,6 @@
+*.fls
+*.aux
+*.log
+*.fdb_latexmk
+*.stack-work
+*auto/
