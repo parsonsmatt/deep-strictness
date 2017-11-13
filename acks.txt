@@ -1,0 +1,6 @@
+People to acknowledge:
+
+- Matt Parsons
+- Matthew Weaver
+- Jennifer Paykin
+- Antal Spector-Zabusky (pre-emptively, cause he's going to help with generics but hasn't done so yet)
