@@ -1,4 +1,4 @@
-{-# language TypeInType, ScopedTypeVariables, StandaloneDeriving, UndecidableInstances, BangPatterns #-}
+{-# language TypeInType, ScopedTypeVariables, UndecidableInstances #-}
 
 ------------------------------------------------------------------------
 -- Observing the strictness of Haskell functions from within Haskell! --
@@ -55,7 +55,7 @@ evenStrict (_ : x : xs) = rnf x `seq` evenStrict xs
 
 -- Combine contexts to demand the union of their demands
 (!!!) :: Context a -> Context a -> Context a
-(!!!) c d = \a -> c a `seq` d a
+(!!!) c d = seq <$> c <*> d
 
 --------------------------------------------------------------------------------
 
@@ -89,11 +89,10 @@ decreasingBottoms as =
 {-# NOINLINE demandCount #-}
 demandCount :: (b -> ()) -> ([a] -> b) -> [a] -> Int
 demandCount c f as = fromJust . asum $
-  map fstIfDefined $
-        zip [0..] $ fmap (c . f) (decreasingBottoms as)
+  zipWith (curry fstIfDefined) [0..] $ fmap (c . f) (decreasingBottoms as)
     where
       fstIfDefined :: (Int, b) -> Maybe Int
-      fstIfDefined = fmap fst . sequenceA . fmap teaspoon
+      fstIfDefined = fmap fst . traverse teaspoon
 
 -- NOTE: Notice the arguments we pass to demandCount. They are, in order:
 -- a Context for b, a function from [a] -> b, and a [a]. We needn't separate
@@ -131,7 +130,7 @@ demandCount' c f as =
 -- idiom below:
 
 evaluate :: () -> IO ()
-evaluate !() = return ()
+evaluate () = return ()
 
 --------------------------------------------------------------------------------
 -- However, just knowing the number of cons-cells forced in evaluation does not
@@ -164,8 +163,8 @@ evaluate !() = return ()
 -- instrument whether a nil constructor is forced. We need another case in
 -- the ADT for ListDemand which contains a (f (Maybe (PrimDemand f)))
 
-data ListDemand (d :: (* -> *) -> *) (f :: * -> *) =
-  Cons (f (Maybe (d f)))
+data ListDemand d (f :: * -> *) =
+  Cons (f (Maybe d))
        (f (Maybe (ListDemand d f)))
 
 showDemand_primList :: Maybe (ListDemand PrimDemand Identity) -> String
@@ -182,16 +181,16 @@ showDemand_primList (Just list) =
 
 printDemand_primList = putStrLn . showDemand_primList
 
-data PrimDemand f = Demanded deriving Show
+data PrimDemand = Demanded deriving Show
 
 -- Some other example demands:
 
 data PairDemand xd yd f =
-  PairDemand (f (Maybe (xd f)))
-             (f (Maybe (yd f)))
+  PairDemand (f (Maybe xd))
+             (f (Maybe yd))
 
 type ListOfPairsOfIntsDemand =
-       ListDemand (PairDemand PrimDemand PrimDemand) Maybe
+       ListDemand (PairDemand PrimDemand PrimDemand Maybe) Maybe
 
 -- Calculate the demand on the list as when f is run on it in the context c
 
@@ -207,7 +206,7 @@ demandList c f as =
 -- Recursively traverse a pointer-based demand and freeze it into an immutable
 -- demand suitable for the user-facing API.
 derefDemand :: ListDemand PrimDemand IORef -> IO (ListDemand PrimDemand Identity)
-derefDemand demand = do
+derefDemand demand =
   case demand of
     Cons primRef listRef ->
       do primDemand <- coerce <$> readIORef primRef
@@ -240,7 +239,7 @@ instrumentListD demand as =
                : instrumentListD listDemand as
 
 {-# NOINLINE instrumentPrim #-}
-instrumentPrim :: IORef (Maybe (PrimDemand IORef)) -> a -> a
+instrumentPrim :: IORef (Maybe PrimDemand) -> a -> a
 instrumentPrim demand a =
   unsafePerformIO $ do
     writeIORef demand $ Just Demanded
